@@ -3,65 +3,38 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub(crate) struct CcTool {
-    path: PathBuf,
-    args: Vec<OsString>,
-    env: Vec<(OsString, OsString)>,
+pub(crate) enum CcTool {
+    RawPath(PathBuf),
+    Resolved(cc::Tool),
 }
 
 impl CcTool {
-    fn from_path(path: impl Into<PathBuf>) -> Self {
-        Self {
-            path: path.into(),
-            args: Vec::new(),
-            env: Vec::new(),
-        }
-    }
-
-    fn from_tool(tool: cc::Tool) -> Self {
-        Self {
-            path: tool.path().to_path_buf(),
-            args: tool.args().to_vec(),
-            env: tool.env().to_vec(),
-        }
-    }
-
     pub(crate) fn command(&self) -> Command {
-        let mut command = Command::new(&self.path);
-        command.args(&self.args);
-        for (name, value) in &self.env {
-            command.env(name, value);
+        match self {
+            Self::RawPath(path) => Command::new(path),
+            Self::Resolved(tool) => tool.to_command(),
         }
-        command
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn env(&self) -> &[(OsString, OsString)] {
-        &self.env
     }
 }
 
 pub(crate) fn resolve_cc(target: &str) -> Result<CcTool, Box<dyn std::error::Error>> {
     if target.contains("android") {
-        return Ok(CcTool::from_path(
+        return Ok(CcTool::RawPath(PathBuf::from(
             env::var("RUST_ANDROID_GRADLE_CC")
                 .or_else(|_| env::var("CC"))
                 .unwrap_or_else(|_| "cc".to_string()),
-        ));
+        )));
     }
 
     if let Ok(cc) = env::var("CC") {
-        return Ok(CcTool::from_path(cc));
+        return Ok(CcTool::RawPath(PathBuf::from(cc)));
     }
 
     let mut builder = cc::Build::new();
     builder.target(target);
-    let compiler = builder.get_compiler();
+    let compiler = builder.try_get_compiler()?;
 
-    Ok(CcTool::from_tool(compiler))
+    Ok(CcTool::Resolved(compiler))
 }
 
 pub(crate) fn resolve_ar(target: &str, cc: &CcTool) -> String {
@@ -77,7 +50,11 @@ pub(crate) fn resolve_ar(target: &str, cc: &CcTool) -> String {
         return "lib.exe".to_string();
     }
     // For non-Windows targets, look for llvm-ar or ar in the compiler directory
-    if let Some(dir) = cc.path().parent() {
+    let cc_path = match cc {
+        CcTool::RawPath(path) => path.as_path(),
+        CcTool::Resolved(tool) => tool.path(),
+    };
+    if let Some(dir) = cc_path.parent() {
         let candidate = dir.join("llvm-ar");
         if candidate.exists() {
             return candidate.to_string_lossy().into_owned();
@@ -101,8 +78,10 @@ pub(crate) fn create_archive(
 
     if is_msvc {
         let mut lib_cmd = Command::new(ar);
-        for (name, value) in cc.env() {
-            lib_cmd.env(name, value);
+        if let CcTool::Resolved(tool) = cc {
+            for (name, value) in tool.env() {
+                lib_cmd.env(name, value);
+            }
         }
         let mut out_arg = OsString::from("/OUT:");
         out_arg.push(archive.as_os_str());
