@@ -112,29 +112,66 @@ runs:
         set -euo pipefail
         dist_dir="dist"
         base_name="${{ inputs.artifact-name }}"
+        package_dir="${dist_dir}/${base_name}"
         bin_dir="target/${{ inputs.target }}/release"
         bin_suffix=""
         if [[ "${RUNNER_OS}" == "Windows" ]]; then
           bin_suffix=".exe"
         fi
-        mkdir -p "${dist_dir}"
-        cp "${bin_dir}/slipstream-client${bin_suffix}" "${dist_dir}/"
-        cp "${bin_dir}/slipstream-server${bin_suffix}" "${dist_dir}/"
-        if command -v sha256sum >/dev/null 2>&1; then
-          (cd "${dist_dir}" && sha256sum "slipstream-client${bin_suffix}" "slipstream-server${bin_suffix}" > "${base_name}.sha256")
-        else
-          (cd "${dist_dir}" && shasum -a 256 "slipstream-client${bin_suffix}" "slipstream-server${bin_suffix}" > "${base_name}.sha256")
-        fi
+        rm -rf "${package_dir}"
+        mkdir -p "${package_dir}"
+        cp "${bin_dir}/slipstream-client${bin_suffix}" "${package_dir}/"
+        cp "${bin_dir}/slipstream-server${bin_suffix}" "${package_dir}/"
 
     - name: Verify Windows artifact dependencies
       if: runner.os == 'Windows'
       shell: pwsh
-      run: ./scripts/verify_windows_artifact_deps.ps1 -DistDir dist -TargetPlatform "${{ inputs.windows-platform }}"
+      run: ./scripts/verify_windows_artifact_deps.ps1 -DistDir "dist/${{ inputs.artifact-name }}" -TargetPlatform "${{ inputs.windows-platform }}"
+
+    - name: Create binary archive (Unix)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+        tar -C dist -czf "dist/${{ inputs.artifact-name }}.tar.gz" "${{ inputs.artifact-name }}"
+
+    - name: Create binary archive (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $baseName = "${{ inputs.artifact-name }}"
+        $packageDir = Join-Path "dist" $baseName
+        $archivePath = Join-Path "dist" "$baseName.zip"
+        Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath $archivePath -Force
+
+    - name: Checksum binary archive
+      shell: bash
+      run: |
+        set -euo pipefail
+        dist_dir="dist"
+        base_name="${{ inputs.artifact-name }}"
+        found=()
+        for archive in "${dist_dir}/${base_name}.tar.gz" "${dist_dir}/${base_name}.zip"; do
+          if [[ -f "${archive}" ]]; then
+            found+=("${archive}")
+          fi
+        done
+        if [[ "${#found[@]}" -ne 1 ]]; then
+          echo "Expected exactly one archive for ${base_name}; found ${#found[@]}" >&2
+          exit 1
+        fi
+        archive_name="$(basename "${found[0]}")"
+        if command -v sha256sum >/dev/null 2>&1; then
+          (cd "${dist_dir}" && sha256sum "${archive_name}" > "${base_name}.sha256")
+        else
+          (cd "${dist_dir}" && shasum -a 256 "${archive_name}" > "${base_name}.sha256")
+        fi
+        rm -rf "${dist_dir}/${base_name}"
 
     - name: Upload binaries
       uses: actions/upload-artifact@v7
       with:
         name: ${{ inputs.artifact-name }}
         path: |
-          dist/*
+          dist/${{ inputs.artifact-name }}.*
         if-no-files-found: error

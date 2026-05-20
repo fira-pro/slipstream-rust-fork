@@ -11,8 +11,14 @@ This is intentionally different from an OpenPGP-signed Git tag. Do not promise
 Arch-style `?signed#tag=` verification unless the project later adopts a
 separate tag-signing key.
 
+A published release must include the CI-built binary archives and checksums
+listed below. Source-only releases are not allowed under this workflow. If a
+release is published without the required assets, do not mutate or reuse that
+tag; cut the next version instead.
+
 ## Prep
 - Update `CHANGELOG.md` with release notes and date.
+  The release workflow extracts notes from a `## vX.Y.Z - YYYY-MM-DD` section.
 - Bump versions in `Cargo.toml` (workspace and crates) as needed.
 - Ensure `Cargo.lock` is updated and committed.
 - Confirm vendor/picoquic is at the intended commit and submodules are initialized.
@@ -33,40 +39,48 @@ separate tag-signing key.
 - Regenerate vectors and docs if DNS behavior changed:
   `./scripts/gen_vectors.sh`, `docs/protocol.md`, `docs/dns-codec.md`.
 
+## Release Assets
+Every published release must contain exactly these CI-built binary archives and
+their checksums:
+
+- `slipstream-linux-x86_64.tar.gz`
+- `slipstream-linux-x86_64.sha256`
+- `slipstream-linux-arm64.tar.gz`
+- `slipstream-linux-arm64.sha256`
+- `slipstream-macos-x86_64.tar.gz`
+- `slipstream-macos-x86_64.sha256`
+- `slipstream-macos-arm64.tar.gz`
+- `slipstream-macos-arm64.sha256`
+- `slipstream-windows-x86_64.zip`
+- `slipstream-windows-x86_64.sha256`
+- `slipstream-windows-arm64.zip`
+- `slipstream-windows-arm64.sha256`
+
 ## Release
-- For a source-only release, create the GitHub Release and let GitHub create
-  the tag:
+Use the `Release` GitHub Actions workflow. Do not use `gh release create`
+manually for a published release.
 
-  ```sh
-  gh release create vX.Y.Z \
-    --repo Mygod/slipstream-rust \
-    --target COMMIT_SHA \
-    --title vX.Y.Z \
-    --notes-file RELEASE_NOTES.md
-  ```
+```sh
+gh workflow run release.yml \
+  --repo Mygod/slipstream-rust \
+  -f version=vX.Y.Z \
+  -f target=COMMIT_SHA
+gh run watch --repo Mygod/slipstream-rust
+```
 
-  Use the exact commit SHA that passed validation. Do not create or push a
-  local Git tag first for this workflow.
-- For a release with attached assets, create a draft first, upload all assets,
-  then publish it:
+Use the exact commit SHA that passed validation. Do not create or push a local
+Git tag first for this workflow.
 
-  ```sh
-  gh release create vX.Y.Z \
-    --repo Mygod/slipstream-rust \
-    --target COMMIT_SHA \
-    --title vX.Y.Z \
-    --notes-file RELEASE_NOTES.md \
-    --draft
-  gh release upload vX.Y.Z dist/* --repo Mygod/slipstream-rust
-  gh release edit vX.Y.Z --repo Mygod/slipstream-rust --draft=false
-  ```
+The workflow builds all six binary artifacts, creates a draft release, uploads
+the required assets, verifies the draft asset list, and only then publishes the
+release. Release immutability locks the tag and assets after publication, so a
+missing asset after publication means the release is bad and the fix is a new
+version.
 
-  Release immutability only locks the tag and assets after the release is
-  published.
 - Verify the published release:
 
   ```sh
-  gh release verify vX.Y.Z --repo Mygod/slipstream-rust
+  gh release view vX.Y.Z --repo Mygod/slipstream-rust --json assets --jq '.assets[].name'
   git ls-remote --tags origin refs/tags/vX.Y.Z
   ```
 

@@ -1,0 +1,237 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag to create, for example v0.1.0.
+        required: true
+        type: string
+      target:
+        description: Exact 40-character commit SHA to release.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate release inputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      target: ${{ steps.validate.outputs.target }}
+    steps:
+      - name: Check out release target
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.target }}
+          submodules: recursive
+
+      - name: Validate release inputs
+        id: validate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          version="${{ inputs.version }}"
+          target="${{ inputs.target }}"
+
+          if [[ ! "${version}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release version must look like vX.Y.Z: ${version}" >&2
+            exit 1
+          fi
+          if [[ ! "${target}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "Release target must be a 40-character commit SHA: ${target}" >&2
+            exit 1
+          fi
+
+          checked_out="$(git rev-parse HEAD)"
+          if [[ "${checked_out}" != "${target}" ]]; then
+            echo "Checked out ${checked_out}, expected ${target}" >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/${version}" >/dev/null 2>&1; then
+            echo "Release tag already exists on origin: ${version}" >&2
+            exit 1
+          fi
+          if gh release view "${version}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release already exists: ${version}" >&2
+            exit 1
+          fi
+
+          awk -v heading="## ${version} " '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > release-notes.md
+          if [[ ! -s release-notes.md ]]; then
+            echo "CHANGELOG.md does not contain non-empty notes for ${version}" >&2
+            exit 1
+          fi
+
+          {
+            echo "version=${version}"
+            echo "target=${target}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+
+  build-binaries:
+    name: Build Binaries (${{ matrix.name }})
+    needs: validate
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            runner: macos-26
+            target: aarch64-apple-darwin
+            artifact: slipstream-macos-arm64
+            windows_platform: x64
+            vcpkg_triplet: ""
+          - name: macos-x86_64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact: slipstream-macos-x86_64
+            windows_platform: x64
+            vcpkg_triplet: ""
+          - name: linux-x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            artifact: slipstream-linux-x86_64
+            windows_platform: x64
+            vcpkg_triplet: ""
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: slipstream-linux-arm64
+            windows_platform: x64
+            vcpkg_triplet: ""
+          - name: windows-x86_64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            artifact: slipstream-windows-x86_64
+            windows_platform: x64
+            vcpkg_triplet: x64-windows-static-md
+          - name: windows-arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            artifact: slipstream-windows-arm64
+            windows_platform: ARM64
+            vcpkg_triplet: arm64-windows-static-md
+    steps:
+      - name: Check out release target
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.validate.outputs.target }}
+          submodules: recursive
+
+      - name: Build binary artifact
+        uses: ./.github/actions/build-binary
+        with:
+          target: ${{ matrix.target }}
+          artifact-name: ${{ matrix.artifact }}
+          windows-platform: ${{ matrix.windows_platform }}
+          vcpkg-triplet: ${{ matrix.vcpkg_triplet }}
+
+  publish:
+    name: Publish immutable release
+    needs:
+      - validate
+      - build-binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: release-assets
+
+      - name: Create draft, attach assets, and publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          version="${{ needs.validate.outputs.version }}"
+          target="${{ needs.validate.outputs.target }}"
+          artifacts=(
+            slipstream-macos-arm64
+            slipstream-macos-x86_64
+            slipstream-linux-x86_64
+            slipstream-linux-arm64
+            slipstream-windows-x86_64
+            slipstream-windows-arm64
+          )
+          asset_paths=()
+          expected_assets=()
+
+          for artifact in "${artifacts[@]}"; do
+            extension="tar.gz"
+            if [[ "${artifact}" == slipstream-windows-* ]]; then
+              extension="zip"
+            fi
+            archive="${artifact}.${extension}"
+            checksum="${artifact}.sha256"
+            for asset in "${archive}" "${checksum}"; do
+              path="release-assets/${artifact}/${asset}"
+              if [[ ! -f "${path}" ]]; then
+                echo "Missing required release asset: ${path}" >&2
+                exit 1
+              fi
+              asset_paths+=("${path}")
+              expected_assets+=("${asset}")
+            done
+          done
+
+          notes_file="release-assets/release-notes/release-notes.md"
+          if [[ ! -s "${notes_file}" ]]; then
+            echo "Missing release notes artifact: ${notes_file}" >&2
+            exit 1
+          fi
+
+          immutable_enabled="$(gh api "repos/${GITHUB_REPOSITORY}/immutable-releases" -H X-GitHub-Api-Version:2026-03-10 --jq '.enabled')"
+          if [[ "${immutable_enabled}" != "true" ]]; then
+            echo "Repository immutable releases are not enabled." >&2
+            exit 1
+          fi
+
+          gh release create "${version}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${target}" \
+            --title "${version}" \
+            --notes-file "${notes_file}" \
+            --draft
+          gh release upload "${version}" "${asset_paths[@]}" --repo "${GITHUB_REPOSITORY}"
+
+          remote_assets="$(gh release view "${version}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name')"
+          for asset in "${expected_assets[@]}"; do
+            if ! grep -qxF "${asset}" <<< "${remote_assets}"; then
+              echo "Draft release is missing uploaded asset: ${asset}" >&2
+              exit 1
+            fi
+          done
+
+          gh release edit "${version}" --repo "${GITHUB_REPOSITORY}" --draft=false
+
+          immutable="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${version}" -H X-GitHub-Api-Version:2026-03-10 --jq '.immutable')"
+          if [[ "${immutable}" != "true" ]]; then
+            echo "Published release is not immutable." >&2
+            exit 1
+          fi
