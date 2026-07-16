@@ -4,7 +4,10 @@ pub const RR_A: u16 = 1;
 pub const RR_TXT: u16 = 16;
 pub const RR_OPT: u16 = 41;
 pub const CLASS_IN: u16 = 1;
+// Standard EDNS(0) UDP payload size; used when EDNS(0) is enabled
 pub const EDNS_UDP_PAYLOAD: u16 = 1232;
+// Traditional DNS limit (RFC 1035): maximum UDP packet size without EDNS(0)
+pub const DNS_MAX_UDP_PAYLOAD: u16 = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rcode {
