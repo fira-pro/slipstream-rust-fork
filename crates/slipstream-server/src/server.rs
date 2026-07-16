@@ -37,6 +37,8 @@ const DNS_MAX_QUERY_SIZE: usize = 512;
 const IDLE_SLEEP_MS: u64 = 10;
 const IDLE_GC_INTERVAL: Duration = Duration::from_secs(1);
 // Default QUIC MTU for server packets; see docs/config.md for details.
+// This value is tuned for standard EDNS(0) support. For 512-byte DNS limit,
+// the server should use a smaller MTU value proportionally (approximately 350-400).
 const QUIC_MTU: u32 = 900;
 pub(crate) const STREAM_READ_CHUNK_BYTES: usize = 4096;
 pub(crate) const DEFAULT_TCP_RCVBUF_BYTES: usize = 256 * 1024;
@@ -416,7 +418,7 @@ pub async fn run_server(config: &ServerConfig) -> Result<i32, ServerError> {
                         let send_backlog =
                             unsafe { (&*state_ptr).stream_send_backlog_summaries(cnx_id, 8) };
                         tracing::warn!(
-                            "server connection stalled: cnx={} streams={} streams_with_write_tx={} streams_with_data_rx={} queued_bytes_total={} streams_with_pending_data={} pending_chunks_total={} pending_bytes_total={} streams_with_pending_fin={} streams_with_fin_enqueued={} streams_with_target_fin_pending={} streams_with_send_pending={} streams_with_send_stash={} send_stash_bytes_total={} streams_discarding={} streams_close_after_flush={} multi_stream={} flow_blocked={} has_ready_stream={} send_backlog={:?}",
+                            "server connection stalled: cnx={} streams={} streams_with_write_tx={} streams_with_data_rx={} queued_bytes_total={} streams_with_pending_data={} pending_chunks_total=[...]
                             cnx_id,
                             metrics.streams_total,
                             metrics.streams_with_write_tx,
