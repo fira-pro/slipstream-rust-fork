@@ -58,6 +58,11 @@ struct Args {
     debug_poll: bool,
     #[arg(long = "debug-streams")]
     debug_streams: bool,
+    #[arg(
+        long = "disable-edns0",
+        help = "Disable EDNS(0) for resolvers with 512-byte DNS limit (traditional DNS only)"
+    )]
+    disable_edns0: bool,
 }
 
 fn main() {
@@ -67,6 +72,19 @@ fn main() {
     let sip003_env = unwrap_or_exit(sip003::read_sip003_env(), "SIP003 env error", 2);
     if sip003_env.is_present() {
         tracing::info!("SIP003 env detected; applying SS_* overrides with CLI precedence");
+    }
+
+    // Configure EDNS(0) based on CLI option or SIP003 setting
+    let disable_edns0 = args.disable_edns0
+        || sip003::last_option_value(&sip003_env.plugin_options, "disable-edns0")
+            .map(|v| v.to_lowercase() == "true" || v == "1")
+            .unwrap_or(false);
+    
+    if disable_edns0 {
+        slipstream_dns::set_enable_edns0(false);
+        tracing::info!(
+            "EDNS(0) disabled: using traditional 512-byte DNS limit (for resolvers without EDNS(0) support)"
+        );
     }
 
     let tcp_listen_host_provided = cli_provided(&matches, "tcp_listen_host");
