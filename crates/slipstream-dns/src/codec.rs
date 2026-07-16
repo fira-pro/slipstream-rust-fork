@@ -4,12 +4,39 @@ use crate::dots;
 use crate::name::{encode_name, extract_subdomain_multi, parse_name};
 use crate::types::{
     DecodeQueryError, DecodedQuery, DnsError, QueryParams, Rcode, ResponseParams, EDNS_UDP_PAYLOAD,
-    RR_OPT, RR_TXT,
+    DNS_MAX_UDP_PAYLOAD, RR_OPT, RR_TXT,
 };
 use crate::wire::{
     parse_header, parse_question, parse_question_for_reply, read_u16, read_u32, write_u16,
     write_u32,
 };
+
+// Global flag to control EDNS(0) behavior. Set to false for resolvers that don't support EDNS(0).
+static mut ENABLE_EDNS0: bool = true;
+
+/// Enable or disable EDNS(0) in DNS queries and responses.
+/// 
+/// Set to false when using resolvers that do not support EDNS(0) and are limited to 512-byte DNS packets.
+/// This will reduce the advertised UDP payload size to 512 bytes per RFC 1035.
+pub fn set_enable_edns0(enable: bool) {
+    unsafe {
+        ENABLE_EDNS0 = enable;
+    }
+}
+
+/// Get the current EDNS(0) setting.
+pub fn is_edns0_enabled() -> bool {
+    unsafe { ENABLE_EDNS0 }
+}
+
+/// Get the configured UDP payload size based on EDNS(0) setting.
+pub fn get_dns_udp_payload() -> u16 {
+    if is_edns0_enabled() {
+        EDNS_UDP_PAYLOAD
+    } else {
+        DNS_MAX_UDP_PAYLOAD
+    }
+}
 
 pub fn decode_query(packet: &[u8], domain: &str) -> Result<DecodedQuery, DecodeQueryError> {
     decode_query_with_domains(packet, &[domain])
@@ -128,7 +155,7 @@ pub fn encode_query(params: &QueryParams<'_>) -> Result<Vec<u8>, DnsError> {
     write_u16(&mut out, params.qdcount);
     write_u16(&mut out, 0);
     write_u16(&mut out, 0);
-    write_u16(&mut out, 1);
+    write_u16(&mut out, if is_edns0_enabled() { 1 } else { 0 });
 
     if params.qdcount > 0 {
         encode_name(params.qname, &mut out)?;
@@ -136,7 +163,9 @@ pub fn encode_query(params: &QueryParams<'_>) -> Result<Vec<u8>, DnsError> {
         write_u16(&mut out, params.qclass);
     }
 
-    encode_opt_record(&mut out)?;
+    if is_edns0_enabled() {
+        encode_opt_record(&mut out)?;
+    }
 
     Ok(out)
 }
@@ -172,7 +201,7 @@ pub fn encode_response(params: &ResponseParams<'_>) -> Result<Vec<u8>, DnsError>
     write_u16(&mut out, 1);
     write_u16(&mut out, ancount);
     write_u16(&mut out, 0);
-    write_u16(&mut out, 1);
+    write_u16(&mut out, if is_edns0_enabled() { 1 } else { 0 });
 
     encode_name(&params.question.name, &mut out)?;
     write_u16(&mut out, params.question.qtype);
@@ -202,7 +231,9 @@ pub fn encode_response(params: &ResponseParams<'_>) -> Result<Vec<u8>, DnsError>
         }
     }
 
-    encode_opt_record(&mut out)?;
+    if is_edns0_enabled() {
+        encode_opt_record(&mut out)?;
+    }
 
     Ok(out)
 }
@@ -279,7 +310,7 @@ pub fn is_response(packet: &[u8]) -> bool {
 fn encode_opt_record(out: &mut Vec<u8>) -> Result<(), DnsError> {
     out.push(0);
     write_u16(out, RR_OPT);
-    write_u16(out, EDNS_UDP_PAYLOAD);
+    write_u16(out, get_dns_udp_payload());
     write_u32(out, 0);
     write_u16(out, 0);
     Ok(())
