@@ -13,13 +13,13 @@ pub(crate) fn compute_mtu(domain_len: usize) -> Result<u32, ClientError> {
     // Without EDNS(0): 512 bytes total DNS packet
     // With EDNS(0): 1232 bytes total DNS packet
     let enable_edns0 = slipstream_dns::is_edns0_enabled();
-    let max_dns_packet = if enable_edns0 { 1232 } else { 512 };
+    let max_dns_packet: u32 = if enable_edns0 { 1232 } else { 512 };
     
     // Account for DNS fixed header (12 bytes), OPT record overhead (11 bytes if present),
     // QNAME with labels, and inline dots
-    let dns_header_overhead = 12;
-    let opt_overhead = if enable_edns0 { 11 } else { 0 };
-    let qname_overhead = domain_len + 2; // domain + dots + null terminator
+    let dns_header_overhead: u32 = 12;
+    let opt_overhead: u32 = if enable_edns0 { 11 } else { 0 };
+    let qname_overhead: u32 = (domain_len as u32) + 2; // domain + dots + null terminator
     
     let available_for_payload = max_dns_packet.saturating_sub(
         dns_header_overhead + opt_overhead + qname_overhead + 6 // qtype + qclass
